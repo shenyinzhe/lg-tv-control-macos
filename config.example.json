@@ -1,0 +1,16 @@
+{
+  "ip": "192.0.2.10",
+  "mac_input": 3,
+  "mac_address": "",
+  "broadcast": "255.255.255.255",
+  "screen_names": [
+    "LG TV",
+    "LG TV SSCR2"
+  ],
+  "input_labels": {
+    "1": "Windows · HDMI 1",
+    "2": "Console · HDMI 2",
+    "3": "Mac · HDMI 3",
+    "4": "HDMI 4"
+  }
+}
