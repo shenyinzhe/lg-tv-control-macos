@@ -88,12 +88,12 @@ class WakeRetryTests(unittest.IsolatedAsyncioTestCase):
         second.get_current_app.return_value = 'com.webos.app.hdmi3'
         second.get_power_state.return_value = {'state': 'Screen Off'}
         with tempfile.TemporaryDirectory() as directory, patch('controller.WebOsClient.create', new=AsyncMock(side_effect=[first, second])), patch('controller.asyncio.sleep', new=AsyncMock()), patch('controller.wake_on_lan') as wol:
-            self.assertEqual(await control(Path(directory), 'wake', CONFIG), 'Mac input: panel on')
+            self.assertEqual(await control(Path(directory), 'wake', CONFIG), 'Selected HDMI_3')
         first.disconnect.assert_awaited_once()
         second.turn_screen_on.assert_awaited_once()
-        second.get_current_app.assert_awaited_once()
-        second.set_input.assert_not_awaited()
-        wol.assert_not_called()
+        self.assertEqual(second.get_current_app.await_count, 2)
+        second.set_input.assert_awaited_once_with('HDMI_3')
+        wol.assert_called_once()
 
     async def test_retry_rechecks_input_after_read_failure(self):
         first, second = AsyncMock(), AsyncMock()
@@ -169,14 +169,18 @@ class StandbyTests(unittest.IsolatedAsyncioTestCase):
             wol.assert_not_called()
         client.set_input.assert_not_awaited(); client.turn_screen_on.assert_not_awaited()
 
-    async def test_ews_without_explicit_standby_does_not_claim_input(self):
-        client = AsyncMock(); client.client_key = 'synthetic'
-        client.connect.side_effect = ConnectionClosedError(Close(1008, 'Try Again Later (EWS)'), None)
-        with tempfile.TemporaryDirectory() as directory, patch('controller.WebOsClient.create', new=AsyncMock(return_value=client)), patch('controller.asyncio.sleep', new=AsyncMock()), patch('controller.wake_on_lan') as wol:
-            base = Path(directory); remember_power(base, CONFIG, {'state': 'Screen Off'})
-            with self.assertRaises(ConnectionClosedError):
-                await control(base, 'wake', CONFIG)
-            wol.assert_not_called()
+    async def test_unknown_state_wakes_and_claims_input_without_history(self):
+        for action in ['wake', 'attach']:
+            for error in [ConnectionClosedError(Close(1008, 'Try Again Later (EWS)'), None), OSError('unreachable')]:
+                first, second = AsyncMock(), AsyncMock()
+                first.client_key = second.client_key = 'synthetic'
+                first.connect.side_effect = error
+                second.get_power_state.return_value = {'state': 'Active'}
+                second.get_current_app.side_effect = ['com.webos.app.hdmi1', 'com.webos.app.hdmi3']
+                with tempfile.TemporaryDirectory() as directory, patch('controller.WebOsClient.create', new=AsyncMock(side_effect=[first, second])), patch('controller.asyncio.sleep', new=AsyncMock()), patch('controller.wake_on_lan') as wol:
+                    self.assertEqual(await control(Path(directory), action, CONFIG), 'Selected HDMI_3')
+                    wol.assert_called_once()
+                second.set_input.assert_awaited_once_with('HDMI_3')
 
     def test_only_explicit_standby_for_same_tv_is_accepted(self):
         with tempfile.TemporaryDirectory() as directory:

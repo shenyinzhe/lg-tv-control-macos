@@ -22,9 +22,9 @@ open "$HOME/Applications/LG TV Control.app"
 
 把示例 IP 和 HDMI 端口替换成你的实际配置。配对时在电视上选择允许；macOS 如弹出本地网络访问请求，也需要允许。快捷键不需要辅助功能权限。
 
-菜单标签和显示器名称可在 `~/Library/Application Support/LGTVControl/config.json` 编辑，格式参考 [config.example.json](config.example.json)，修改后重启 App。需要网络唤醒时用 `configure --mac-address … --broadcast …` 加入电视 MAC 和局域网广播地址。后台监听电视的真实电源变化；确认此前进入完整待机时，自动发送 WOL 并切到 Mac HDMI。电视仍在运行或只是面板关闭时，其他输入仍受保护。
+菜单标签和显示器名称可在 `~/Library/Application Support/LGTVControl/config.json` 编辑，格式参考 [config.example.json](config.example.json)，修改后重启 App。需要网络唤醒时用 `configure --mac-address … --broadcast …` 加入电视 MAC 和局域网广播地址。自动启动、唤醒或接入时先连接电视；若遇到网络错误、超时或 EWS 拒绝，则直接发送 WOL，并在重连后切到 Mac HDMI，不要求之前记录到待机。电视能正常响应且正在使用其他输入时，仍保留输入保护。
 
-如果电视关机时 App 未运行或 Mac 已完全睡眠，可能错过待机状态上报；此时不会仅凭网络错误判断待机，可用明确的 HDMI 快捷键唤醒。
+这个策略优先切回 Mac：电视服务或网络临时故障也可能导致抢走原本正在使用的输入。电源监听仅供诊断，不再作为自动唤醒的前提。
 
 ## 登录启动与卸载
 

@@ -143,11 +143,11 @@ async def control_once(base, action, config, context=None):
             await asyncio.wait_for(client.connect(), 90 if action == "pair" else 5)
         except (OSError, asyncio.TimeoutError, ConnectionClosed) as error:
             if action in ("wake", "attach"):
-                if transient_wake_error(error) and not context.get("claimed_standby") and observed_standby(base, config):
-                    context["claimed_standby"] = True
+                if transient_wake_error(error) and not context.get("claim_input"):
+                    context["claim_input"] = True
                     wake_on_lan(config)
-                    print("Confirmed standby: sent Wake-on-LAN; will select Mac HDMI after startup", file=sys.stderr)
-                elif transient_wake_error(error) and context.get("claimed_standby"):
+                    print("TV connection unavailable: sent Wake-on-LAN; will select Mac HDMI after reconnect", file=sys.stderr)
+                elif transient_wake_error(error) and context.get("claim_input"):
                     wake_on_lan(config)
                 raise
             if not action.startswith("hdmi"):
@@ -161,14 +161,14 @@ async def control_once(base, action, config, context=None):
         if action in ("wake", "attach"):
             power = await client.get_power_state()
             if power.get("state") in STANDBY_STATES:
-                context["claimed_standby"] = True
+                context["claim_input"] = True
                 wake_on_lan(config)
                 raise OSError("TV reports standby; waiting for network wake")
             if power.get("processing"):
                 raise OSError("TV power transition in progress")
             if power.get("state") not in ("Active", "Screen Off", "Screen Saver"):
                 raise ValueError("Unknown TV power state; automatic action skipped")
-            if context.get("claimed_standby"):
+            if context.get("claim_input"):
                 return await execute(client, "hdmi" + str(config["mac_input"]), config)
             # Attachment to an already running TV uses the same input guard as wake.
             return await execute(client, "wake", config)
@@ -193,7 +193,7 @@ def transient_wake_error(error):
 
 async def control(base, action, config):
     # Retry the entire wake transaction with a fresh connection and input query.
-    # Do not replay sleep commands late. Only confirmed standby grants input ownership.
+    # Do not replay sleep commands late. Connection failures also grant input ownership under the aggressive wake policy.
     delays = WAKE_RETRY_DELAYS if action in ("wake", "attach") else ()
     context = {}
     for attempt in range(len(delays) + 1):

@@ -108,7 +108,7 @@ final class TVApp: NSObject, NSApplicationDelegate {
             self?.debounce = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
         })
-        if screenPresent || hasStandbyEvidence() {
+        if configuration["ip"] as? String != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.run("wake", quiet: true) }
         }
         log("App started; registered \(keys.count) hotkeys; LG connected: \(screenPresent)")
