@@ -1,0 +1,3 @@
+Runtime notices supplied by python-build-standalone.
+Source: https://github.com/astral-sh/python-build-standalone/tree/afcc4534699cfc048f93f7fa23ae65a2fc9e3067
+Release runtime: CPython 3.13.15, macOS aarch64, provisioned by uv.

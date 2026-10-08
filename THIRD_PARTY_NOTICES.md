@@ -15,3 +15,5 @@ The build copies installed dependency license texts and CPython's license into `
 A frozen Python runtime may also bundle OpenSSL, SQLite, libffi and other platform/runtime libraries. Before distributing public binaries, audit the specific runtime produced by your Python distribution and include all applicable notices. The source repository does not vendor that runtime. A local ad-hoc build is not a notarized public release.
 
 The initial behavior was inspired by cmer/lg-tv-control-macos; the native Swift application and configurable wrapper are independently maintained here. No upstream installer or prebuilt TV-control binary is vendored.
+
+The v1.1.1 Apple Silicon release uses uv-provisioned python-build-standalone CPython 3.13.15. Runtime dependency notices are included under `licenses/python-build-standalone` and copied into the App. Its Mach-O dependencies were checked for external Homebrew/Conda paths.
