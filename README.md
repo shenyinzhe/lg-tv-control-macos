@@ -77,6 +77,7 @@ The upstream webOS client accepts the TV's self-signed TLS certificate without a
 ## Behavior and limitations
 
 - Automatic sleep/wake checks the TV's current app; failed queries cause no panel action. Another controller can still change input between that check and the command: this is not an atomic lock across computers.
+- Wake retries temporary network errors and the TV’s `1008 Try Again Later (EWS)` response after 2, 4, and 8 seconds (four attempts, 40-second total deadline). Each attempt reconnects and rechecks the input. Pairing errors and other policy rejections are not retried.
 - Background wake never sends Wake-on-LAN and never switches input. It only restores a reachable TV currently on the Mac input.
 - A fully sleeping TV may not advertise its display to macOS. Cable reattachment then cannot be detected reliably without CEC.
 - The Mac may suspend before an asynchronous sleep command finishes. This app does not delay system sleep or override power policy.

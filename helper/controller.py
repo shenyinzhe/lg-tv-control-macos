@@ -11,6 +11,7 @@ import socket
 import sys
 
 from bscpylgtv import WebOsClient
+from websockets.exceptions import ConnectionClosed
 
 DEFAULTS = {
     "ip": "", "mac_input": 3, "mac_address": "", "broadcast": "255.255.255.255",
@@ -83,7 +84,7 @@ async def execute(client, action, config):
     raise ValueError("Unknown action")
 
 
-async def control(base, action, config):
+async def control_once(base, action, config):
     client = await WebOsClient.create(config["ip"], key_file_path=str(base / "pairing.sqlite"),
                                      states=[], connect_retry_attempts=2)
     client.manifest = MANIFEST
@@ -107,6 +108,32 @@ async def control(base, action, config):
         key_file = base / "pairing.sqlite"
         if key_file.exists():
             key_file.chmod(0o600)
+
+
+WAKE_RETRY_DELAYS = (2, 4, 8)
+
+
+def transient_wake_error(error):
+    if isinstance(error, (OSError, asyncio.TimeoutError)):
+        return True
+    if isinstance(error, ConnectionClosed) and error.rcvd is not None:
+        return (error.rcvd.code == 1008 and "Try Again Later (EWS)" in error.rcvd.reason)
+    return False
+
+
+async def control(base, action, config):
+    # Retry the entire wake transaction with a fresh connection and input query.
+    # Do not replay sleep commands late or send WOL on background wake.
+    delays = WAKE_RETRY_DELAYS if action == "wake" else ()
+    for attempt in range(len(delays) + 1):
+        try:
+            return await control_once(base, action, config)
+        except Exception as error:
+            if attempt == len(delays) or not transient_wake_error(error):
+                raise
+            delay = delays[attempt]
+            print(f"Wake attempt {attempt + 1} temporarily failed ({type(error).__name__}); retrying in {delay}s", file=sys.stderr)
+            await asyncio.sleep(delay)
 
 
 def cli():
@@ -142,7 +169,7 @@ def cli():
                 print("Configuration saved. Run pair next; restart the app after editing configuration.")
                 return 0
             config = load_config(base)
-            result = asyncio.run(asyncio.wait_for(control(base, args.action, config), 100 if args.action == "pair" else 25))
+            result = asyncio.run(asyncio.wait_for(control(base, args.action, config), 100 if args.action == "pair" else (40 if args.action == "wake" else 25)))
             print(json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else result)
             return 0
     except BlockingIOError:

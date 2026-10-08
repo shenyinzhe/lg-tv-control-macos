@@ -3,8 +3,11 @@ from pathlib import Path
 import sys
 import unittest
 from unittest.mock import AsyncMock, patch
+import tempfile
+from websockets.exceptions import ConnectionClosedError
+from websockets.frames import Close
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'helper'))
-from controller import execute, validate, wake_on_lan
+from controller import execute, validate, wake_on_lan, control
 
 CONFIG = {'ip': '192.0.2.10', 'mac_input': 3}
 
@@ -73,6 +76,60 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         c = self.client('com.webos.app.hdmi1')
         with patch('controller.asyncio.sleep', new=AsyncMock()), self.assertRaises(RuntimeError):
             await execute(c, 'hdmi2', CONFIG)
+
+class WakeRetryTests(unittest.IsolatedAsyncioTestCase):
+    def ews(self):
+        return ConnectionClosedError(Close(1008, 'Try Again Later (EWS)'), None)
+
+    async def test_ews_then_mac_input_recovers(self):
+        first, second = AsyncMock(), AsyncMock()
+        first.client_key = second.client_key = 'synthetic-key'
+        first.connect.side_effect = self.ews()
+        second.get_current_app.return_value = 'com.webos.app.hdmi3'
+        second.get_power_state.return_value = {'state': 'Screen Off'}
+        with tempfile.TemporaryDirectory() as directory, patch('controller.WebOsClient.create', new=AsyncMock(side_effect=[first, second])), patch('controller.asyncio.sleep', new=AsyncMock()), patch('controller.wake_on_lan') as wol:
+            self.assertEqual(await control(Path(directory), 'wake', CONFIG), 'Mac input: panel on')
+        first.disconnect.assert_awaited_once()
+        second.turn_screen_on.assert_awaited_once()
+        second.get_current_app.assert_awaited_once()
+        second.set_input.assert_not_awaited()
+        wol.assert_not_called()
+
+    async def test_retry_rechecks_input_after_read_failure(self):
+        first, second = AsyncMock(), AsyncMock()
+        first.client_key = second.client_key = 'synthetic-key'
+        first.get_current_app.side_effect = self.ews()
+        second.get_current_app.return_value = 'com.webos.app.hdmi1'
+        with tempfile.TemporaryDirectory() as directory, patch('controller.WebOsClient.create', new=AsyncMock(side_effect=[first, second])), patch('controller.asyncio.sleep', new=AsyncMock()):
+            self.assertEqual(await control(Path(directory), 'wake', CONFIG), 'Other input: skipped')
+        first.turn_screen_on.assert_not_awaited()
+        second.turn_screen_on.assert_not_awaited()
+        second.set_input.assert_not_awaited()
+
+    async def test_retries_are_bounded(self):
+        with patch('controller.control_once', new=AsyncMock(side_effect=self.ews())) as attempt, patch('controller.asyncio.sleep', new=AsyncMock()) as delay:
+            with self.assertRaises(ConnectionClosedError):
+                await control(Path('/unused'), 'wake', CONFIG)
+            self.assertEqual(attempt.await_count, 4)
+            self.assertEqual([call.args[0] for call in delay.await_args_list], [2, 4, 8])
+
+    async def test_wifi_timeout_is_retried(self):
+        with patch('controller.control_once', new=AsyncMock(side_effect=[OSError('unreachable'), 'ok'])) as attempt, patch('controller.asyncio.sleep', new=AsyncMock()):
+            self.assertEqual(await control(Path('/unused'), 'wake', CONFIG), 'ok')
+            self.assertEqual(attempt.await_count, 2)
+
+    async def test_pairing_errors_and_other_policy_rejections_not_retried(self):
+        for error in [ValueError('not paired'), ConnectionClosedError(Close(1008, 'Unauthorized'), None)]:
+            with patch('controller.control_once', new=AsyncMock(side_effect=error)) as attempt:
+                with self.assertRaises(type(error)):
+                    await control(Path('/unused'), 'wake', CONFIG)
+                self.assertEqual(attempt.await_count, 1)
+
+    async def test_sleep_is_not_replayed_later(self):
+        with patch('controller.control_once', new=AsyncMock(side_effect=self.ews())) as attempt:
+            with self.assertRaises(ConnectionClosedError):
+                await control(Path('/unused'), 'sleep', CONFIG)
+            self.assertEqual(attempt.await_count, 1)
 
 if __name__ == '__main__':
     unittest.main()
