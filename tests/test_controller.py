@@ -7,7 +7,7 @@ import tempfile
 from websockets.exceptions import ConnectionClosedError
 from websockets.frames import Close
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'helper'))
-from controller import execute, validate, wake_on_lan, control
+from controller import execute, validate, wake_on_lan, control, remember_power, observed_standby
 
 CONFIG = {'ip': '192.0.2.10', 'mac_input': 3}
 
@@ -98,6 +98,8 @@ class WakeRetryTests(unittest.IsolatedAsyncioTestCase):
     async def test_retry_rechecks_input_after_read_failure(self):
         first, second = AsyncMock(), AsyncMock()
         first.client_key = second.client_key = 'synthetic-key'
+        first.get_power_state.return_value = {'state': 'Active'}
+        second.get_power_state.return_value = {'state': 'Active'}
         first.get_current_app.side_effect = self.ews()
         second.get_current_app.return_value = 'com.webos.app.hdmi1'
         with tempfile.TemporaryDirectory() as directory, patch('controller.WebOsClient.create', new=AsyncMock(side_effect=[first, second])), patch('controller.asyncio.sleep', new=AsyncMock()):
@@ -130,6 +132,61 @@ class WakeRetryTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ConnectionClosedError):
                 await control(Path('/unused'), 'sleep', CONFIG)
             self.assertEqual(attempt.await_count, 1)
+
+class StandbyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_known_standby_wakes_and_selects_mac_from_other_input(self):
+        first, second = AsyncMock(), AsyncMock()
+        first.client_key = second.client_key = 'synthetic'
+        first.connect.side_effect = ConnectionClosedError(Close(1008, 'Try Again Later (EWS)'), None)
+        second.get_power_state.return_value = {'state': 'Active'}
+        second.get_current_app.side_effect = ['com.webos.app.hdmi1', 'com.webos.app.hdmi3']
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            remember_power(base, CONFIG, {'state': 'Active Standby'})
+            with patch('controller.WebOsClient.create', new=AsyncMock(side_effect=[first, second])), patch('controller.asyncio.sleep', new=AsyncMock()), patch('controller.wake_on_lan') as wol:
+                self.assertEqual(await control(base, 'wake', CONFIG), 'Selected HDMI_3')
+                wol.assert_called_once()
+        second.set_input.assert_awaited_once_with('HDMI_3')
+
+    async def test_active_other_input_overrides_old_standby_observation(self):
+        for action in ['wake', 'attach']:
+            client = AsyncMock(); client.client_key = 'synthetic'
+            client.get_power_state.return_value = {'state': 'Active'}
+            client.get_current_app.return_value = 'com.webos.app.hdmi1'
+            with tempfile.TemporaryDirectory() as directory:
+                base = Path(directory); remember_power(base, CONFIG, {'state': 'Active Standby'})
+                with patch('controller.WebOsClient.create', new=AsyncMock(return_value=client)), patch('controller.wake_on_lan') as wol:
+                    self.assertEqual(await control(base, action, CONFIG), 'Other input: skipped')
+                    wol.assert_not_called()
+            client.set_input.assert_not_awaited(); client.turn_screen_on.assert_not_awaited()
+
+    async def test_screen_off_other_input_is_protected(self):
+        client = AsyncMock(); client.client_key = 'synthetic'
+        client.get_power_state.return_value = {'state': 'Screen Off'}
+        client.get_current_app.return_value = 'com.webos.app.hdmi1'
+        with tempfile.TemporaryDirectory() as directory, patch('controller.WebOsClient.create', new=AsyncMock(return_value=client)), patch('controller.wake_on_lan') as wol:
+            await control(Path(directory), 'attach', CONFIG)
+            wol.assert_not_called()
+        client.set_input.assert_not_awaited(); client.turn_screen_on.assert_not_awaited()
+
+    async def test_ews_without_explicit_standby_does_not_claim_input(self):
+        client = AsyncMock(); client.client_key = 'synthetic'
+        client.connect.side_effect = ConnectionClosedError(Close(1008, 'Try Again Later (EWS)'), None)
+        with tempfile.TemporaryDirectory() as directory, patch('controller.WebOsClient.create', new=AsyncMock(return_value=client)), patch('controller.asyncio.sleep', new=AsyncMock()), patch('controller.wake_on_lan') as wol:
+            base = Path(directory); remember_power(base, CONFIG, {'state': 'Screen Off'})
+            with self.assertRaises(ConnectionClosedError):
+                await control(base, 'wake', CONFIG)
+            wol.assert_not_called()
+
+    def test_only_explicit_standby_for_same_tv_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self.assertFalse(observed_standby(base, CONFIG))
+            remember_power(base, CONFIG, {'state': 'Active Standby'})
+            self.assertTrue(observed_standby(base, CONFIG))
+            self.assertFalse(observed_standby(base, {**CONFIG, 'ip': '192.0.2.11'}))
+            remember_power(base, CONFIG, {'state': 'Active'})
+            self.assertFalse(observed_standby(base, CONFIG))
 
 if __name__ == '__main__':
     unittest.main()

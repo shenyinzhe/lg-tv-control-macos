@@ -8,12 +8,12 @@ A native menu-bar app that switches LG webOS TV HDMI inputs using **⌘⌃1–4*
 
 - Native menu-bar HDMI selection and Command + Control + number hotkeys.
 - Automatic panel off/on only when the TV reports the configured Mac HDMI input.
-- Detect a newly connected LG display and select the configured Mac input.
-- Optional Wake-on-LAN for explicit input selection and display attachment.
+- Detect a newly connected LG display; respect an already running TV’s input.
+- Wake-on-LAN after explicitly observed standby; select the Mac HDMI after wake.
 - Standard TV pairing prompt, with credentials stored outside the app and repository.
 - No changes to macOS sleep settings, TV labels, picture settings, or CEC.
 
-This is an early release. The predecessor app's HDMI 1–3 switching and panel commands were verified on an LG C3, M1 Pro and macOS 26.5.1. The configurable repository build is covered by mocked controller tests and a local bundle build; real system sleep/wake and cable reattachment still need hardware testing. Intel Macs and other TV models have not been tested.
+This is an early release. The predecessor app's HDMI 1–3 switching and panel commands were verified on an LG C3, M1 Pro and macOS 26.5.1. The configurable build has 20 mocked tests and a local bundle build. A hardware test confirmed that an active HDMI 1 is protected, and an explicitly observed full standby can be woken by WOL and switched to HDMI 3. A complete Mac system-sleep cycle and cable reattachment still need hardware testing. Intel Macs and other TV models have not been tested.
 
 ## Requirements
 
@@ -70,15 +70,17 @@ Startup is opt-in. This installs a user LaunchAgent that uses `open` to launch t
 
 ## Data and privacy
 
-All runtime files are in `~/Library/Application Support/LGTVControl/`: `config.json`, `pairing.sqlite`, `controller.lock`, and `app.log`. These are excluded from Git. Pairing credentials are local files, not Keychain items, and are restricted to the current user. Never upload that directory or raw TV status output in an issue. The app has no analytics or cloud service.
+All runtime files are in `~/Library/Application Support/LGTVControl/`: `config.json`, `pairing.sqlite`, `controller.lock`, `monitor.lock`, `power-observation.json`, and `app.log`. These are excluded from Git. Pairing credentials are local files, not Keychain items, and are restricted to the current user. Never upload that directory or raw TV status output in an issue. The app has no analytics or cloud service.
 
 The upstream webOS client accepts the TV's self-signed TLS certificate without authenticating its identity. Use only a trusted LAN; see [SECURITY.md](SECURITY.md). Runtime controls use the local TV and optional LAN broadcast only.
 
 ## Behavior and limitations
 
 - Automatic sleep/wake checks the TV's current app; failed queries cause no panel action. Another controller can still change input between that check and the command: this is not an atomic lock across computers.
-- Wake retries temporary network errors and the TV’s `1008 Try Again Later (EWS)` response after 2, 4, and 8 seconds (four attempts, 40-second total deadline). Each attempt reconnects and rechecks the input. Pairing errors and other policy rejections are not retried.
-- Background wake never sends Wake-on-LAN and never switches input. It only restores a reachable TV currently on the Mac input.
+- Wake retries temporary network errors and the TV’s `1008 Try Again Later (EWS)` response after 2, 4, and 8 seconds (four attempts, 50-second total deadline). Each attempt reconnects and rechecks the input. Pairing errors and other policy rejections are not retried.
+- A background power-state monitor records explicit TV states in `power-observation.json`. When a connection fails and the last observed state for that TV is `Active Standby`, `Suspend`, or `Power Off`, automatic wake/attachment sends Wake-on-LAN, reconnects, and selects the Mac HDMI. A reachable active TV always gets the input guard first, even if a cached standby record exists.
+- Unknown state, EWS alone, and network failures alone do not prove standby. If the app was not running when the TV shut down (or the Mac was fully asleep), it may miss that transition; use an explicit HDMI hotkey in that case. Cached observations cannot eliminate cross-device races or unobserved power cycles.
+- `Screen Off` remains an operating TV, and automatic wake/attachment never takes another input in that state.
 - A fully sleeping TV may not advertise its display to macOS. Cable reattachment then cannot be detected reliably without CEC.
 - The Mac may suspend before an asynchronous sleep command finishes. This app does not delay system sleep or override power policy.
 - Other computers' power automation still needs its own current-input guard.

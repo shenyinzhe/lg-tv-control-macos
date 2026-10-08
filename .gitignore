@@ -12,3 +12,5 @@ config.json
 *.lock
 .env
 .env.*
+power-observation.json
+power-observation.json.tmp

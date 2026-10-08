@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import socket
 import sys
+import time
 
 from bscpylgtv import WebOsClient
 from websockets.exceptions import ConnectionClosed
@@ -55,6 +56,52 @@ def wake_on_lan(config):
         sock.sendto(packet, (config["broadcast"], 9))
 
 
+STANDBY_STATES = {"Active Standby", "Suspend", "Power Off"}
+
+
+def remember_power(base, config, payload):
+    state = payload.get("state")
+    if not state:
+        return
+    path = base / "power-observation.json"
+    temp = base / "power-observation.json.tmp"
+    temp.write_text(json.dumps({"ip": config["ip"], "state": state,
+                                "processing": payload.get("processing"), "observed_at": time.time()}))
+    temp.chmod(0o600)
+    temp.replace(path)
+
+
+def observed_standby(base, config):
+    try:
+        data = json.loads((base / "power-observation.json").read_text())
+        return data.get("ip") == config["ip"] and data.get("state") in STANDBY_STATES
+    except (OSError, ValueError):
+        return False
+
+
+async def monitor(base, config):
+    # A disconnect/EWS is never stored as standby. Only explicit TV reports are evidence.
+    while True:
+        client = await WebOsClient.create(config["ip"], key_file_path=str(base / "pairing.sqlite"),
+                                         states=[], connect_retry_attempts=1)
+        client.manifest = MANIFEST
+        try:
+            if not client.client_key:
+                raise ValueError("Pair TV before starting the monitor")
+            await asyncio.wait_for(client.connect(), 5)
+            async def update(payload):
+                remember_power(base, config, payload)
+            await client.subscribe_power(update)
+            while True:
+                await asyncio.sleep(15)
+                await asyncio.wait_for(client.get_power_state(), 5)
+        except (OSError, asyncio.TimeoutError, ConnectionClosed):
+            pass
+        finally:
+            await client.disconnect()
+        await asyncio.sleep(5)
+
+
 async def execute(client, action, config):
     """Check current input immediately before automatic panel changes; fail closed."""
     app = await client.get_current_app()
@@ -84,7 +131,8 @@ async def execute(client, action, config):
     raise ValueError("Unknown action")
 
 
-async def control_once(base, action, config):
+async def control_once(base, action, config, context=None):
+    context = context if context is not None else {}
     client = await WebOsClient.create(config["ip"], key_file_path=str(base / "pairing.sqlite"),
                                      states=[], connect_retry_attempts=2)
     client.manifest = MANIFEST
@@ -93,8 +141,16 @@ async def control_once(base, action, config):
             raise ValueError("TV is not paired. Run pair and accept the TV prompt first.")
         try:
             await asyncio.wait_for(client.connect(), 90 if action == "pair" else 5)
-        except (OSError, asyncio.TimeoutError):
-            if not (action.startswith("hdmi") or action == "attach"):
+        except (OSError, asyncio.TimeoutError, ConnectionClosed) as error:
+            if action in ("wake", "attach"):
+                if transient_wake_error(error) and not context.get("claimed_standby") and observed_standby(base, config):
+                    context["claimed_standby"] = True
+                    wake_on_lan(config)
+                    print("Confirmed standby: sent Wake-on-LAN; will select Mac HDMI after startup", file=sys.stderr)
+                elif transient_wake_error(error) and context.get("claimed_standby"):
+                    wake_on_lan(config)
+                raise
+            if not action.startswith("hdmi"):
                 raise
             await client.disconnect()
             wake_on_lan(config)
@@ -102,6 +158,20 @@ async def control_once(base, action, config):
             await asyncio.wait_for(client.connect(), 8)
         if action == "pair":
             return "Paired successfully"
+        if action in ("wake", "attach"):
+            power = await client.get_power_state()
+            if power.get("state") in STANDBY_STATES:
+                context["claimed_standby"] = True
+                wake_on_lan(config)
+                raise OSError("TV reports standby; waiting for network wake")
+            if power.get("processing"):
+                raise OSError("TV power transition in progress")
+            if power.get("state") not in ("Active", "Screen Off", "Screen Saver"):
+                raise ValueError("Unknown TV power state; automatic action skipped")
+            if context.get("claimed_standby"):
+                return await execute(client, "hdmi" + str(config["mac_input"]), config)
+            # Attachment to an already running TV uses the same input guard as wake.
+            return await execute(client, "wake", config)
         return await execute(client, action, config)
     finally:
         await client.disconnect()
@@ -123,11 +193,12 @@ def transient_wake_error(error):
 
 async def control(base, action, config):
     # Retry the entire wake transaction with a fresh connection and input query.
-    # Do not replay sleep commands late or send WOL on background wake.
-    delays = WAKE_RETRY_DELAYS if action == "wake" else ()
+    # Do not replay sleep commands late. Only confirmed standby grants input ownership.
+    delays = WAKE_RETRY_DELAYS if action in ("wake", "attach") else ()
+    context = {}
     for attempt in range(len(delays) + 1):
         try:
-            return await control_once(base, action, config)
+            return await control_once(base, action, config, context)
         except Exception as error:
             if attempt == len(delays) or not transient_wake_error(error):
                 raise
@@ -145,14 +216,14 @@ def cli():
     setup.add_argument("--mac-input", type=int, required=True)
     setup.add_argument("--mac-address")
     setup.add_argument("--broadcast")
-    for action in ["pair", "status", "hdmi1", "hdmi2", "hdmi3", "hdmi4", "sleep", "wake", "attach"]:
+    for action in ["monitor", "pair", "status", "hdmi1", "hdmi2", "hdmi3", "hdmi4", "sleep", "wake", "attach"]:
         sub.add_parser(action)
     args = parser.parse_args()
     os.umask(0o077)
     base = args.data_dir.expanduser().resolve()
     base.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
-        with (base / "controller.lock").open("w") as lock:
+        with (base / ("monitor.lock" if args.action == "monitor" else "controller.lock")).open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.action == "configure":
                 path = base / "config.json"
@@ -169,7 +240,10 @@ def cli():
                 print("Configuration saved. Run pair next; restart the app after editing configuration.")
                 return 0
             config = load_config(base)
-            result = asyncio.run(asyncio.wait_for(control(base, args.action, config), 100 if args.action == "pair" else (40 if args.action == "wake" else 25)))
+            if args.action == "monitor":
+                asyncio.run(monitor(base, config))
+                return 0
+            result = asyncio.run(asyncio.wait_for(control(base, args.action, config), 100 if args.action == "pair" else (50 if args.action in ("wake", "attach") else 25)))
             print(json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else result)
             return 0
     except BlockingIOError:

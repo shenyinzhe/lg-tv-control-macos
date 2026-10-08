@@ -7,6 +7,7 @@ final class TVApp: NSObject, NSApplicationDelegate {
     var item: NSStatusItem!
     var statusItem: NSMenuItem!
     var keys: [EventHotKeyRef] = []
+    var monitorTask: Process?
     var handler: EventHandlerRef?
     var pending: [(String, Bool)] = []
     var busy = false
@@ -81,6 +82,7 @@ final class TVApp: NSObject, NSApplicationDelegate {
             else { statusItem.title = "Hotkey registration failed: \(id)" }
             log("Register Cmd+Ctrl+\(id): \(status)")
         }
+        startMonitor()
         screenPresent = connected()
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification] {
@@ -91,7 +93,7 @@ final class TVApp: NSObject, NSApplicationDelegate {
         }
         for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                guard let self = self, self.connected() else { return }
+                guard let self = self else { return }
                 self.run("wake", quiet: true)
             })
         }
@@ -106,7 +108,27 @@ final class TVApp: NSObject, NSApplicationDelegate {
             self?.debounce = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
         })
+        if screenPresent || hasStandbyEvidence() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.run("wake", quiet: true) }
+        }
         log("App started; registered \(keys.count) hotkeys; LG connected: \(screenPresent)")
+    }
+    func hasStandbyEvidence() -> Bool {
+        guard let data = try? Data(contentsOf: dataDirectory.appendingPathComponent("power-observation.json")),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let state = value["state"] as? String else { return false }
+        return ["Active Standby", "Suspend", "Power Off"].contains(state)
+    }
+    func startMonitor() {
+        guard let resources = Bundle.main.resourceURL else { return }
+        let task = Process()
+        task.executableURL = resources.appendingPathComponent("lgtv-helper/lgtv-helper")
+        task.arguments = ["monitor"]
+        task.currentDirectoryURL = dataDirectory
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
+        do { try task.run(); monitorTask = task; log("Power-state monitor started") }
+        catch { log("Power-state monitor failed: \(error)") }
     }
     @objc func selectInput(_ sender: NSMenuItem) { run("hdmi\(sender.tag)", quiet: false) }
     @objc func pairTV() { run("pair", quiet: false) }
@@ -161,6 +183,7 @@ final class TVApp: NSObject, NSApplicationDelegate {
         catch { busy = false; statusItem.title = "Could not start controller"; log("Launch error: \(error)") }
     }
     func applicationWillTerminate(_ notification: Notification) {
+        if let monitor = monitorTask, monitor.isRunning { monitor.terminate() }
         keys.forEach { UnregisterEventHotKey($0) }
         if let handler = handler { RemoveEventHandler(handler) }
     }

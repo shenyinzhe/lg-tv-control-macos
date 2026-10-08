@@ -22,7 +22,9 @@ open "$HOME/Applications/LG TV Control.app"
 
 把示例 IP 和 HDMI 端口替换成你的实际配置。配对时在电视上选择允许；macOS 如弹出本地网络访问请求，也需要允许。快捷键不需要辅助功能权限。
 
-菜单标签和显示器名称可在 `~/Library/Application Support/LGTVControl/config.json` 编辑，格式参考 [config.example.json](config.example.json)，修改后重启 App。需要网络唤醒时用 `configure --mac-address … --broadcast …` 加入电视 MAC 和局域网广播地址。后台唤醒不会发送 WOL，也不会抢 HDMI。
+菜单标签和显示器名称可在 `~/Library/Application Support/LGTVControl/config.json` 编辑，格式参考 [config.example.json](config.example.json)，修改后重启 App。需要网络唤醒时用 `configure --mac-address … --broadcast …` 加入电视 MAC 和局域网广播地址。后台监听电视的真实电源变化；确认此前进入完整待机时，自动发送 WOL 并切到 Mac HDMI。电视仍在运行或只是面板关闭时，其他输入仍受保护。
+
+如果电视关机时 App 未运行或 Mac 已完全睡眠，可能错过待机状态上报；此时不会仅凭网络错误判断待机，可用明确的 HDMI 快捷键唤醒。
 
 ## 登录启动与卸载
 
@@ -35,6 +37,6 @@ open "$HOME/Applications/LG TV Control.app"
 
 ## 当前验证范围
 
-前身 App 已在 M1 Pro、macOS 26.5.1、LG C3 上验证 HDMI 1–3 切换和面板控制；仓库通用版本有模拟测试和本地构建验证。真实系统睡眠／唤醒、HDMI 拔插、Intel 机器及其他型号仍需实测。睡眠过程中异步命令可能来不及完成；电视完全待机时，Mac 也可能检测不到 HDMI 接入。
+前身 App 已在 M1 Pro、macOS 26.5.1、LG C3 上验证 HDMI 1–3 切换和面板控制；仓库通用版本有 20 项模拟测试和本地构建验证；已实测活动 HDMI 1 不被自动切换，以及记录完整待机后 WOL 唤醒并切 HDMI 3。真实系统睡眠／唤醒、HDMI 拔插、Intel 机器及其他型号仍需实测。睡眠过程中异步命令可能来不及完成；电视完全待机时，Mac 也可能检测不到 HDMI 接入。
 
 源码采用 MIT 许可证。本地构建是 ad-hoc 签名，没有 Apple 公证，也没有自动更新。请勿提交 `pairing.sqlite`、实际 `config.json` 或电视状态输出。更多限制、开发说明和依赖许可见 [English README](README.md)。
